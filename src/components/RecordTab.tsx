@@ -1,93 +1,148 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import Icon from '@/components/ui/icon';
 import GuitarFretboard from './GuitarFretboard';
+import { AudioPitchDetector, DetectedNote as PitchNote } from '@/utils/pitchDetection';
 
 interface DetectedNote {
   note: string;
   frequency: number;
   string: number;
   fret: number;
+  clarity?: number;
+}
+
+const guitarStrings = [
+  { note: 'E', frequency: 82.41, string: 6 },
+  { note: 'A', frequency: 110.00, string: 5 },
+  { note: 'D', frequency: 146.83, string: 4 },
+  { note: 'G', frequency: 196.00, string: 3 },
+  { note: 'B', frequency: 246.94, string: 2 },
+  { note: 'E', frequency: 329.63, string: 1 },
+];
+
+function findFretPosition(note: string, frequency: number): { string: number; fret: number } | null {
+  const noteSequence = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+  
+  for (const guitarString of guitarStrings) {
+    const openNoteIndex = noteSequence.indexOf(guitarString.note);
+    const targetNoteIndex = noteSequence.indexOf(note);
+    
+    const fret = (targetNoteIndex - openNoteIndex + 12) % 12;
+    
+    const expectedFreq = guitarString.frequency * Math.pow(2, fret / 12);
+    const freqDiff = Math.abs(frequency - expectedFreq);
+    
+    if (freqDiff < 10 && fret <= 12) {
+      return { string: guitarString.string, fret };
+    }
+  }
+  
+  return null;
 }
 
 const RecordTab = () => {
   const [isRecording, setIsRecording] = useState(false);
+  const [currentNote, setCurrentNote] = useState<DetectedNote | null>(null);
   const [detectedNotes, setDetectedNotes] = useState<DetectedNote[]>([]);
   const [audioLevel, setAudioLevel] = useState(0);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
-  const animationFrameRef = useRef<number | null>(null);
+  const pitchDetectorRef = useRef<AudioPitchDetector | null>(null);
+  const lastNoteRef = useRef<string | null>(null);
+  const noteTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const startRecording = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      pitchDetectorRef.current = new AudioPitchDetector();
       
-      audioContextRef.current = new AudioContext();
-      const source = audioContextRef.current.createMediaStreamSource(stream);
-      analyserRef.current = audioContextRef.current.createAnalyser();
-      analyserRef.current.fftSize = 2048;
-      source.connect(analyserRef.current);
-
-      mediaRecorderRef.current = new MediaRecorder(stream);
-      
-      const visualize = () => {
-        if (!analyserRef.current) return;
-        
-        const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
-        analyserRef.current.getByteTimeDomainData(dataArray);
-        
-        let sum = 0;
-        for (let i = 0; i < dataArray.length; i++) {
-          sum += Math.abs(dataArray[i] - 128);
+      await pitchDetectorRef.current.start((pitchNote: PitchNote | null) => {
+        if (pitchNote) {
+          const position = findFretPosition(pitchNote.note, pitchNote.frequency);
+          
+          if (position) {
+            const newNote: DetectedNote = {
+              note: pitchNote.note,
+              frequency: pitchNote.frequency,
+              string: position.string,
+              fret: position.fret,
+              clarity: pitchNote.clarity
+            };
+            
+            setCurrentNote(newNote);
+            
+            const noteKey = `${pitchNote.note}-${position.string}-${position.fret}`;
+            if (lastNoteRef.current !== noteKey) {
+              lastNoteRef.current = noteKey;
+              
+              if (noteTimeoutRef.current) {
+                clearTimeout(noteTimeoutRef.current);
+              }
+              
+              noteTimeoutRef.current = setTimeout(() => {
+                setDetectedNotes(prev => {
+                  const exists = prev.some(
+                    n => n.note === newNote.note && n.string === newNote.string && n.fret === newNote.fret
+                  );
+                  if (!exists) {
+                    return [...prev, newNote];
+                  }
+                  return prev;
+                });
+              }, 500);
+            }
+          }
+        } else {
+          setCurrentNote(null);
         }
-        const average = sum / dataArray.length;
-        setAudioLevel(average / 128 * 100);
-        
-        animationFrameRef.current = requestAnimationFrame(visualize);
-      };
+      });
       
-      visualize();
-      mediaRecorderRef.current.start();
       setIsRecording(true);
-      
-      setTimeout(() => {
-        stopRecording();
-        simulateNoteDetection();
-      }, 3000);
+      setDetectedNotes([]);
       
     } catch (error) {
       console.error('Error accessing microphone:', error);
+      alert('Не удалось получить доступ к микрофону. Проверьте настройки браузера.');
     }
   };
 
   const stopRecording = () => {
-    if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
-      mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
+    if (pitchDetectorRef.current) {
+      pitchDetectorRef.current.stop();
+      pitchDetectorRef.current = null;
     }
     
-    if (audioContextRef.current) {
-      audioContextRef.current.close();
-    }
-    
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current);
+    if (noteTimeoutRef.current) {
+      clearTimeout(noteTimeoutRef.current);
+      noteTimeoutRef.current = null;
     }
     
     setIsRecording(false);
+    setCurrentNote(null);
     setAudioLevel(0);
+    lastNoteRef.current = null;
   };
 
-  const simulateNoteDetection = () => {
-    const notes: DetectedNote[] = [
-      { note: 'E', frequency: 82.41, string: 6, fret: 0 },
-      { note: 'A', frequency: 110.00, string: 5, fret: 0 },
-      { note: 'D', frequency: 146.83, string: 4, fret: 0 },
-    ];
-    setDetectedNotes(notes);
-  };
+  useEffect(() => {
+    return () => {
+      if (pitchDetectorRef.current) {
+        pitchDetectorRef.current.stop();
+      }
+      if (noteTimeoutRef.current) {
+        clearTimeout(noteTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (isRecording && pitchDetectorRef.current) {
+      const interval = setInterval(() => {
+        const volume = pitchDetectorRef.current?.getVolume() || 0;
+        setAudioLevel(volume * 100);
+      }, 50);
+      
+      return () => clearInterval(interval);
+    }
+  }, [isRecording]);
 
   return (
     <div className="space-y-6">
@@ -110,14 +165,30 @@ const RecordTab = () => {
             </p>
 
             {isRecording && (
-              <div className="w-full max-w-md">
-                <div className="h-2 bg-secondary rounded-full overflow-hidden">
-                  <div 
-                    className="h-full bg-primary transition-all duration-100"
-                    style={{ width: `${audioLevel}%` }}
-                  />
+              <>
+                <div className="w-full max-w-md">
+                  <div className="h-2 bg-secondary rounded-full overflow-hidden">
+                    <div 
+                      className="h-full bg-primary transition-all duration-100"
+                      style={{ width: `${audioLevel}%` }}
+                    />
+                  </div>
                 </div>
-              </div>
+                
+                {currentNote && (
+                  <div className="text-center p-4 bg-primary/10 rounded-lg">
+                    <p className="text-3xl font-bold">{currentNote.note}</p>
+                    <p className="text-sm text-muted-foreground">
+                      {currentNote.frequency.toFixed(1)} Hz • {currentNote.string} струна • {currentNote.fret} лад
+                    </p>
+                    {currentNote.clarity && (
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Точность: {Math.round(currentNote.clarity * 100)}%
+                      </p>
+                    )}
+                  </div>
+                )}
+              </>
             )}
           </div>
         </CardContent>

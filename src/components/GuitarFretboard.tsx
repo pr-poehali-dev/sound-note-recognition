@@ -54,7 +54,7 @@ const GuitarFretboard = ({ highlightedNotes }: GuitarFretboardProps) => {
                            }} 
                       />
                       {highlighted && (
-                        <div className="relative z-10 w-7 h-7 rounded-full bg-primary flex items-center justify-center text-primary-foreground font-bold text-xs animate-scale-in">
+                        <div className="relative z-10 w-7 h-7 rounded-full bg-primary flex items-center justify-center text-primary-foreground font-bold text-xs shadow-lg">
                           {noteName}
                         </div>
                       )}
